@@ -1,0 +1,17 @@
+AI WhatsApp Web Copilot Extension adalah sebuah ekstensi Chrome berbasis Manifest V3 yang dirancang untuk meningkatkan pengalaman komunikasi di WhatsApp Web dengan bantuan kecerdasan buatan. Ekstensi ini mampu membaca konteks percakapan secara real-time, menganalisis isi chat, serta memberikan rekomendasi balasan dan penjelasan situasi percakapan secara otomatis. Sistem ini bekerja langsung di browser tanpa server backend berat, sehingga lebih ringan dan responsif.
+
+Ekstensi ini bekerja dengan cara melakukan scraping pada elemen DOM WhatsApp Web menggunakan Content Script. Dengan bantuan MutationObserver, ekstensi dapat mendeteksi perubahan pesan secara langsung setiap kali ada chat baru masuk atau terkirim. Data percakapan seperti isi pesan, pengirim, waktu, dan struktur reply akan diambil dan disusun menjadi konteks yang siap diproses oleh AI.
+
+Seluruh konteks percakapan kemudian dikirim ke Background Service Worker untuk diproses lebih lanjut. Service worker ini bertugas sebagai penghubung antara extension dan API AI GitHub GPT-4.1. Selain itu, komponen ini juga mengatur manajemen konteks, caching data, serta pembatasan request agar penggunaan API tetap efisien dan tidak berlebihan.
+
+Ekstensi ini memiliki dua mode utama, yaitu Recommendation Mode dan Free Chat Mode. Recommendation Mode digunakan untuk menganalisis percakapan yang sedang berlangsung, memahami suasana chat, dan memberikan tiga opsi balasan yang berbeda seperti santai, netral, atau tegas. Mode ini sangat membantu pengguna dalam merespons pesan dengan cepat dan tepat sesuai konteks.
+
+Free Chat Mode memungkinkan pengguna berinteraksi langsung dengan AI tanpa harus bergantung pada konteks percakapan WhatsApp. Dalam mode ini, pengguna dapat mengajukan pertanyaan apa saja, dan AI akan memberikan jawaban seperti asisten biasa, namun tetap dapat memanfaatkan konteks chat jika dibutuhkan untuk memberikan jawaban yang lebih relevan.
+
+Untuk menjaga relevansi percakapan, ekstensi ini menggunakan Context Builder yang menyimpan beberapa pesan terakhir dalam bentuk structured JSON. Sistem ini juga dilengkapi dengan context window management, di mana percakapan lama akan diringkas secara otomatis agar tidak melebihi batas token AI, sehingga tetap efisien dan akurat dalam pemahaman konteks.
+
+Dari sisi penyimpanan, ekstensi ini memanfaatkan IndexedDB untuk menyimpan histori percakapan dan ringkasan konteks secara lokal di browser. Selain itu, chrome.storage.local digunakan untuk cache cepat seperti mode aktif, preferensi pengguna, dan data sementara agar pengalaman penggunaan lebih cepat dan stabil.
+
+Antarmuka pengguna (UI) dibangun menggunakan React dan TailwindCSS untuk memberikan tampilan yang modern dan responsif. UI ini mencakup tombol pemilihan mode, panel saran balasan, serta tampilan analisis percakapan yang mudah dipahami oleh pengguna tanpa mengganggu tampilan asli WhatsApp Web.
+
+Secara keseluruhan, proyek ini menggabungkan teknologi Chrome Extension, DOM manipulation, context engineering, dan AI generatif berbasis GPT-4.1 dari GitHub Models API. Tujuannya adalah menciptakan asisten komunikasi cerdas yang dapat membantu pengguna memahami percakapan, mempercepat respons, dan meningkatkan kualitas komunikasi secara real-time di WhatsApp Web.

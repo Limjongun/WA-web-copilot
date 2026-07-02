@@ -1,0 +1,150 @@
+🧠 Tech Stack AI Chrome Extension (WhatsApp Web Copilot)
+1. 🧩 Core Architecture
+
+Chrome Extension Manifest V3
+
+Content Script
+Inject ke web.whatsapp.com
+Baca DOM chat (message bubbles, sender, timestamp)
+Detect perubahan real-time (MutationObserver)
+Background Service Worker
+Handle request ke AI API
+Manage context memory
+Rate limit + caching
+Popup / Side Panel UI
+Mode switch:
+🧠 Recommendation Mode
+💬 Free Chat Mode
+2. 🔍 DOM & Chat Intelligence Layer
+📌 WhatsApp Web Reader
+MutationObserver → detect chat update
+Parser:
+message text
+sender (you / contact / group)
+timestamp
+reply/quote structure
+📌 Context Builder Engine
+Ambil last N messages (misalnya 20–50)
+Strukturkan jadi:
+[
+  { "role": "user", "name": "A", "text": "..." },
+  { "role": "assistant", "name": "You", "text": "..." }
+]
+Tambahkan:
+current chat topic detection
+sentiment flag (optional)
+3. 🧠 AI Engine (GitHub GPT-4.1 API)
+📡 Model Layer
+
+Gunakan:
+
+GitHub Models API → GPT-4.1
+Endpoint style mirip OpenAI-compatible API
+⚙️ Prompt Modes
+🟢 Recommendation Mode
+
+Fungsi:
+
+menyarankan balasan cepat
+analisis situasi chat
+tone adjustment (formal, santai, cuek)
+
+Prompt system:
+
+You are a WhatsApp assistant. Analyze conversation context and:
+1. Explain situation briefly
+2. Suggest 3 reply options (casual, neutral, assertive)
+3. Detect emotional tone
+
+Output:
+
+Explanation
+Quick replies buttons
+🔵 Free Chat Mode
+
+Fungsi:
+
+user tanya bebas
+AI tetap pakai chat context
+
+Prompt:
+
+You are an assistant embedded in WhatsApp Web.
+User can ask anything. Use chat context when relevant.
+If unrelated, answer normally.
+4. 🧠 Memory & Context System
+📦 Local Storage Layer
+IndexedDB (utama)
+chrome.storage.local (quick cache)
+🧠 Context Window Manager
+Sliding window (last 30–100 messages)
+Summarization every X messages:
+“conversation summary chunk”
+
+Optional upgrade:
+
+mini summarizer model (GPT-4.1 cheap call)
+5. ⚡ AI Pipeline Flow
+DOM Chat → Content Script
+        ↓
+Context Builder
+        ↓
+Background Worker
+        ↓
+GPT-4.1 API (GitHub Models)
+        ↓
+Response Parser
+        ↓
+UI (suggestion buttons / chat panel)
+6. 🧑‍💻 Frontend Tech Stack
+React (recommended)
+TailwindCSS (UI cepat)
+Zustand / Redux (state mode + context)
+ShadCN UI (opsional biar clean)
+
+UI Components:
+
+Chat insight panel
+Quick reply chips
+Mode toggle switch
+Context timeline view
+7. 🧩 Extension Tools Layer
+chrome.tabs
+chrome.runtime
+chrome.scripting
+MutationObserver
+WebSocket interceptor (optional advanced)
+8. 🧠 Optional AI Upgrade (Advanced banget 🚀)
+🔥 Features tambahan:
+Emotion detection model
+Reply ranking system (score 1–10)
+Auto rewrite message style:
+“lebih sopan”
+“lebih dingin”
+“lebih lucu”
+Smart reply learning dari user behavior
+9. 🗂️ Folder Structure
+extension/
+ ├── manifest.json
+ ├── content/
+ │    ├── domReader.js
+ │    ├── observer.js
+ ├── background/
+ │    ├── aiWorker.js
+ │    ├── contextManager.js
+ ├── ui/
+ │    ├── popup.jsx
+ │    ├── sidepanel.jsx
+ ├── lib/
+ │    ├── githubAI.js
+ │    ├── promptTemplates.js
+ ├── storage/
+ │    ├── indexedDB.js
+10. 💥 Tech Stack Summary (Clean Version)
+Chrome Extension MV3
+React + Tailwind
+MutationObserver DOM scraping
+IndexedDB memory system
+GitHub Models API (GPT-4.1)
+Context summarization engine
+Service Worker AI handler
