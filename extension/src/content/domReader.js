@@ -45,74 +45,155 @@ const injectTextToWhatsApp = (text) => {
   }, 300);
 };
 
-// Core function to extract chat data
+// Helper: Decode UNIX timestamp from WhatsApp message ID
+// Format: true_628xxx@c.us_3EB0TIMESTAMP (timestamp embedded in hex)
+const decodeTimestampFromId = (dataId) => {
+  try {
+    // WA message IDs contain a 32-char hex segment. The last 8 hex chars = unix seconds
+    const parts = dataId.split('_');
+    const hexSegment = parts[parts.length - 1];
+    if (hexSegment && hexSegment.length >= 8) {
+      const ts = parseInt(hexSegment.slice(-8), 16);
+      if (ts > 1000000000 && ts < 9999999999) {
+        return new Date(ts * 1000).toISOString();
+      }
+    }
+  } catch (_) {}
+  return null;
+};
+
+// Helper: Detect message type from bubble DOM
+const detectMessageType = (div) => {
+  if (div.querySelector('span[data-testid="revoked"]') || div.querySelector('div[data-testid="revoked"]')) return 'deleted';
+  if (div.querySelector('img[src*="blob"]') || div.querySelector('div[data-testid*="media"]')) return 'image';
+  if (div.querySelector('span[data-icon="audio-play"]') || div.querySelector('span[data-testid="ptt-play"]') || div.querySelector('audio')) return 'voice';
+  if (div.querySelector('div[data-testid="document-thumb"]') || div.querySelector('span[data-icon="document-pdf"]') || div.querySelector('span[data-icon="document"]')) return 'document';
+  if (div.querySelector('img[data-testid*="sticker"]') || div.querySelector('div[data-testid="sticker"]')) return 'sticker';
+  if (div.querySelector('div[data-testid="poll-creation"]') || div.querySelector('span[data-icon="poll"]')) return 'poll';
+  return 'text';
+};
+
+// Helper: Extract quoted/reply-to message
+const extractReplyContext = (div) => {
+  const quotedEl = div.querySelector('div[data-testid="quoted-message"]') ||
+                   div.querySelector('div.quoted-mention') ||
+                   div.querySelector('div[class*="quoted"]');
+  if (!quotedEl) return null;
+  const quotedText = quotedEl.querySelector('span.selectable-text')?.innerText?.trim() ||
+                     quotedEl.innerText?.trim();
+  const quotedSender = quotedEl.querySelector('span[class*="author"]')?.innerText?.trim() || null;
+  return quotedText ? { sender: quotedSender, text: quotedText } : null;
+};
+
+// Core function to extract rich chat data
 const getChatContext = () => {
   const mainChat = document.getElementById('main');
   if (!mainChat) return null;
 
-  // Contact name: dari header span yang punya title attribute
+  // Contact name: from header span with title attribute
   const contactNameEl = mainChat.querySelector('header span[title]');
   const contactName = contactNameEl ? contactNameEl.getAttribute('title') : "Unknown Contact";
 
-  // --- STRATEGY 1: cari message bubbles via data-id (paling reliabel) ---
+  // --- STRATEGY 1: message bubbles via data-id (most reliable) ---
   let extractedMessages = [];
   const messageDivs = mainChat.querySelectorAll('div[data-id]');
 
   if (messageDivs.length > 0) {
+    let prevTimestamp = null;
     messageDivs.forEach(div => {
-      // Ambil semua teks yang bisa dipilih di dalam bubble ini
-      const textSpans = div.querySelectorAll('span.selectable-text');
-      if (textSpans.length === 0) return;
+      const dataId = div.getAttribute('data-id') || '';
 
-      const text = Array.from(textSpans).map(s => s.innerText).join(' ').trim();
+      // ==========================================================
+      // DIRECTION DETECTION — multi-layer approach
+      //
+      // WhatsApp Web renders outgoing (YOUR) messages with the class
+      // "message-out" somewhere in the bubble's DOM tree.
+      // Incoming messages (from contact) use "message-in" or have no such class.
+      //
+      // We check from most-reliable to least-reliable:
+      //   1. Does THIS div or any CHILD contain class *message-out*?
+      //   2. Does any PARENT of this div contain class *message-out*?
+      //   3. data-id prefix: "false_" = outgoing (You), "true_" = incoming
+      //      NOTE: "false" means fromMe=false relative to the DB side,
+      //      but in practice WhatsApp Web uses false_ for YOUR sent msgs.
+      // ==========================================================
+      let isOutgoing = false;
+
+      // Priority 1: check self + descendants
+      if (div.classList.contains('message-out') || div.querySelector('[class*="message-out"]')) {
+        isOutgoing = true;
+      }
+      // Priority 2: check ancestors up to #main
+      else if (div.closest('[class*="message-out"]')) {
+        isOutgoing = true;
+      }
+      // Priority 3: data-id prefix (false_ = sent by you, true_ = received)
+      else if (dataId.startsWith('false_')) {
+        isOutgoing = true;
+      } else if (dataId.startsWith('true_')) {
+        isOutgoing = false;
+      }
+
+      // Message type
+      const type = detectMessageType(div);
+
+      // Text extraction
+      const textSpans = div.querySelectorAll('span.selectable-text');
+      let text = Array.from(textSpans).map(s => s.innerText).join(' ').trim();
+
+      // For non-text types, use a descriptive label if no text
+      if (!text) {
+        const typeLabels = {
+          deleted: '[Pesan dihapus]',
+          image: '[Gambar]',
+          voice: '[Pesan suara]',
+          document: '[Dokumen]',
+          sticker: '[Sticker]',
+          poll: '[Poll]'
+        };
+        text = typeLabels[type] || '';
+      }
       if (!text) return;
 
-      // Deteksi arah pesan paling akurat via awalan 'data-id'
-      // WhatsApp biasanya format: "true_nomor@c.us_..." untuk pesan kita, "false_..." untuk pesan lawan
-      let isOutgoing = false;
-      const dataId = div.getAttribute('data-id') || '';
-      if (dataId.startsWith('true_')) {
-        isOutgoing = true;
-      } else if (dataId.startsWith('false_')) {
-        isOutgoing = false;
-      } else {
-        // Fallback jika format data-id berubah
-        isOutgoing = div.classList.contains('message-out') ||
-                     !!div.querySelector('[class*="message-out"]') ||
-                     !!div.querySelector('div[data-pre-plain-text]')?.closest('[class*="out"]');
+      // Timestamp
+      const timestamp = decodeTimestampFromId(dataId);
+      let delaySeconds = null;
+      if (timestamp && prevTimestamp) {
+        delaySeconds = Math.round((new Date(timestamp) - new Date(prevTimestamp)) / 1000);
       }
-      
+      if (timestamp) prevTimestamp = timestamp;
+
+      // Reply-thread context
+      const replyTo = extractReplyContext(div);
+
       const sender = isOutgoing ? 'You' : contactName;
-      extractedMessages.push({ sender, text });
+      console.log(`[WA Copilot] msg: "${text.slice(0,30)}" | dataId: ${dataId.slice(0,20)} | isOutgoing: ${isOutgoing} | sender: ${sender}`);
+      extractedMessages.push({ sender, text, type, timestamp, delaySeconds, replyTo });
     });
   }
 
-  // --- STRATEGY 2: fallback via copyable-text attribute (di pre-plain-text) ---
+
+  // --- STRATEGY 2: fallback via data-pre-plain-text ---
   if (extractedMessages.length === 0) {
     const copyables = mainChat.querySelectorAll('[data-pre-plain-text]');
     copyables.forEach(el => {
       const meta = el.getAttribute('data-pre-plain-text') || '';
-      // Meta sering kali "[jam, tanggal] Nama:"
-      // Kita asumsikan jika meta mengandung "You" atau nama user, itu milik user.
-      // Namun untuk mempermudah, kita cek posisi bubble nya
       const isOutgoing = !!el.closest('.message-out') || meta.includes('You');
-      const textSpan = el.querySelector('span.selectable-text') ||
-                       el.querySelector('span[class*="selectable"]');
+      const textSpan = el.querySelector('span.selectable-text') || el.querySelector('span[class*="selectable"]');
       const text = textSpan ? textSpan.innerText.trim() : el.innerText.trim();
       if (!text) return;
-      extractedMessages.push({ sender: isOutgoing ? 'You' : contactName, text });
+      extractedMessages.push({ sender: isOutgoing ? 'You' : contactName, text, type: 'text' });
     });
   }
 
-  // --- STRATEGY 3: fallback paling luas --- ambil semua selectable-text di dalam #main
+  // --- STRATEGY 3: broadest fallback ---
   if (extractedMessages.length === 0) {
     const allTextSpans = mainChat.querySelectorAll('span.selectable-text');
     allTextSpans.forEach(span => {
       const text = span.innerText.trim();
       if (!text || text.length < 1) return;
-      // Sulit membedakan pengirim pada level fallback ini, tebak berdasarkan letak
       const isOutgoing = !!span.closest('.message-out');
-      extractedMessages.push({ sender: isOutgoing ? 'You' : contactName, text });
+      extractedMessages.push({ sender: isOutgoing ? 'You' : contactName, text, type: 'text' });
     });
   }
 
@@ -198,24 +279,6 @@ const injectAIFloatingButton = () => {
     align-items: center;
   `;
 
-  // Button: Test Extract
-  const btnExtract = document.createElement('button');
-  btnExtract.innerHTML = '🔍 Extract';
-  btnExtract.style.cssText = `
-    background: #3B82F6;
-    color: white;
-    border: none;
-    border-radius: 20px;
-    padding: 5px 11px;
-    font-weight: bold;
-    cursor: pointer;
-    font-size: 12px;
-    transition: opacity 0.2s;
-  `;
-  btnExtract.onmouseenter = () => { btnExtract.style.opacity = '0.85'; };
-  btnExtract.onmouseleave = () => { btnExtract.style.opacity = '1'; };
-  btnExtract.onclick = extractActiveChat;
-
   // Button: AI Reply
   const btnAI = document.createElement('button');
   btnAI.innerHTML = '✨ AI Reply';
@@ -260,7 +323,6 @@ const injectAIFloatingButton = () => {
     });
   };
 
-  btnRow.appendChild(btnExtract);
   btnRow.appendChild(btnAI);
   panel.appendChild(handle);
   panel.appendChild(btnRow);

@@ -1,16 +1,41 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useAppStore } from '../../lib/store'
-import { Check, Copy, RefreshCw, MessageCircle, Sparkles, Loader2, AlertCircle } from 'lucide-react'
+import { Check, Copy, RefreshCw, MessageCircle, Sparkles, Loader2, AlertCircle, Target, Trash2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
+// Tone indicator config
+const TONE_CONFIG = {
+  cold:     { color: '#60A5FA', label: 'Dingin',   bg: 'bg-blue-500' },
+  neutral:  { color: '#A3A3A3', label: 'Netral',   bg: 'bg-neutral-400' },
+  warm:     { color: '#34D399', label: 'Hangat',   bg: 'bg-emerald-400' },
+  tense:    { color: '#FBBF24', label: 'Tegang',   bg: 'bg-amber-400' },
+  conflict: { color: '#F87171', label: 'Konflik',  bg: 'bg-red-400' },
+}
+
 export function RecommendationPanel() {
-  const { chatContext, setChatContext } = useAppStore()
+  const { chatContext, setChatContext, contactGoals, initGoals, setGoal, clearGoal } = useAppStore()
   const [copied, setCopied] = useState(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [error, setError] = useState(null)
+  const [isEditingContext, setIsEditingContext] = useState(false)
+  const [customContext, setCustomContext] = useState("")
+  const [currentContact, setCurrentContact] = useState(null)
+
+  // Goal editing state
+  const [isEditingGoal, setIsEditingGoal] = useState(false)
+  const [goalDraft, setGoalDraft] = useState("")
 
   const situation = chatContext.situation || null
   const replies = chatContext.replies || []
+  const tone = chatContext.tone || null
+  const toneInfo = tone ? TONE_CONFIG[tone] : null
+
+  // Current goal for this contact
+  const currentGoal = currentContact ? (contactGoals[currentContact]?.goal || '') : ''
+
+  useEffect(() => {
+    initGoals()
+  }, [])
 
   const handleActivateAI = async () => {
     setIsAnalyzing(true)
@@ -24,7 +49,6 @@ export function RecommendationPanel() {
     }
 
     try {
-      // 1. Find WhatsApp Web tab by URL (active+currentWindow picks the POPUP window, not browser tab)
       const allTabs = await chrome.tabs.query({ url: '*://web.whatsapp.com/*' })
       const waTab = allTabs[0]
       
@@ -34,14 +58,10 @@ export function RecommendationPanel() {
         return
       }
 
-      // 2. Request chat context from content script
       const chatData = await new Promise((resolve) => {
         chrome.tabs.sendMessage(waTab.id, { type: 'GET_CHAT_CONTEXT' }, (response) => {
-          if (chrome.runtime.lastError) {
-            resolve(null)
-          } else {
-            resolve(response)
-          }
+          if (chrome.runtime.lastError) resolve(null)
+          else resolve(response)
         })
       })
 
@@ -51,19 +71,20 @@ export function RecommendationPanel() {
         return
       }
 
-      // 3. Send to background for AI analysis
+      // Track current contact
+      if (chatData.contactName) setCurrentContact(chatData.contactName)
+
+      chatData.customContext = customContext;
+
       const result = await new Promise((resolve) => {
         chrome.runtime.sendMessage({ type: 'ANALYZE_CHAT', payload: chatData }, (response) => {
-          if (chrome.runtime.lastError) {
-            resolve(null)
-          } else {
-            resolve(response)
-          }
+          if (chrome.runtime.lastError) resolve(null)
+          else resolve(response)
         })
       })
 
       if (result && result.status === 'Success') {
-        setChatContext({ situation: result.situation, replies: result.replies })
+        setChatContext({ situation: result.situation, replies: result.replies, tone: result.tone })
       } else {
         setError(result?.error || "Gagal menganalisis chat. Coba lagi.")
       }
@@ -90,9 +111,62 @@ export function RecommendationPanel() {
     })
   }
 
+  const handleSaveGoal = () => {
+    if (currentContact) {
+      setGoal(currentContact, goalDraft)
+    }
+    setIsEditingGoal(false)
+  }
+
   return (
     <div className="flex flex-col h-full space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-300">
       
+      {/* Goal Banner — always visible if goal is set */}
+      {currentGoal && !isEditingGoal && (
+        <div className="flex items-center gap-2 bg-primary/10 border border-primary/25 rounded-xl px-3 py-2">
+          <Target className="w-3.5 h-3.5 text-primary shrink-0" />
+          <p className="text-xs text-primary flex-1 line-clamp-2">
+            <span className="font-semibold">Tujuan:</span> {currentGoal}
+          </p>
+          <button
+            onClick={() => { setGoalDraft(currentGoal); setIsEditingGoal(true) }}
+            className="text-muted-foreground hover:text-primary transition-colors shrink-0"
+          >
+            <RefreshCw className="w-3 h-3" />
+          </button>
+          <button
+            onClick={() => { clearGoal(currentContact); setGoalDraft('') }}
+            className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Goal Editor */}
+      {isEditingGoal && (
+        <div className="bg-card border border-border rounded-xl p-3 space-y-2">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Target className="w-3.5 h-3.5 text-primary" />
+            <span className="text-xs font-semibold text-primary uppercase tracking-wider">Tujuan Percakapan</span>
+          </div>
+          <textarea
+            value={goalDraft}
+            onChange={(e) => setGoalDraft(e.target.value)}
+            placeholder="Contoh: Ajak dia makan malam weekend ini..."
+            className="w-full bg-background border border-border rounded-lg p-2 text-xs text-foreground/90 focus:outline-none focus:ring-1 focus:ring-primary min-h-[56px] resize-none"
+          />
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setIsEditingGoal(false)} className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+              Batal
+            </button>
+            <button onClick={handleSaveGoal} className="px-3 py-1 bg-primary text-primary-foreground text-xs font-medium rounded-md hover:bg-primary/90 transition-colors">
+              Simpan
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Activate Button */}
       <button
         onClick={handleActivateAI}
@@ -116,6 +190,17 @@ export function RecommendationPanel() {
           </>
         )}
       </button>
+
+      {/* Set Goal Button (shown before any analysis or if no goal) */}
+      {!currentGoal && !isEditingGoal && (
+        <button
+          onClick={() => { setGoalDraft(''); setIsEditingGoal(true) }}
+          className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium text-muted-foreground border border-dashed border-border hover:border-primary/50 hover:text-primary transition-all"
+        >
+          <Target className="w-3.5 h-3.5" />
+          Tetapkan Tujuan Percakapan
+        </button>
+      )}
 
       {/* Error */}
       {error && (
@@ -141,11 +226,63 @@ export function RecommendationPanel() {
       {/* Situation Analysis */}
       {situation && (
         <div className="bg-secondary/50 rounded-xl p-3 border border-border">
-          <h3 className="text-xs font-semibold text-primary uppercase tracking-wider mb-1.5 flex items-center gap-1">
-            <MessageCircle className="w-3 h-3" />
-            Situasi Chat
-          </h3>
-          <p className="text-sm text-foreground/80 leading-relaxed">{situation}</p>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-1.5">
+              <MessageCircle className="w-3 h-3 text-primary" />
+              <h3 className="text-xs font-semibold text-primary uppercase tracking-wider">Situasi Chat</h3>
+              {/* Tone Dot Indicator */}
+              {toneInfo && (
+                <div className="flex items-center gap-1 ml-1">
+                  <div
+                    className="w-2 h-2 rounded-full animate-pulse"
+                    style={{ backgroundColor: toneInfo.color }}
+                    title={`Nada: ${toneInfo.label}`}
+                  />
+                  <span className="text-[10px] font-medium" style={{ color: toneInfo.color }}>
+                    {toneInfo.label}
+                  </span>
+                </div>
+              )}
+            </div>
+            {!isEditingContext && (
+              <button 
+                onClick={() => setIsEditingContext(true)}
+                className="text-xs text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
+              >
+                <RefreshCw className="w-3 h-3" /> Revisi
+              </button>
+            )}
+          </div>
+          
+          {isEditingContext ? (
+            <div className="space-y-2 mt-2">
+              <textarea
+                value={customContext}
+                onChange={(e) => setCustomContext(e.target.value)}
+                placeholder="Jelaskan situasi sebenarnya atau tambahkan konteks..."
+                className="w-full bg-background border border-border rounded-lg p-2 text-xs text-foreground/90 focus:outline-none focus:ring-1 focus:ring-primary min-h-[60px] resize-none"
+              />
+              <div className="flex justify-end gap-2">
+                <button 
+                  onClick={() => setIsEditingContext(false)}
+                  className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Batal
+                </button>
+                <button 
+                  onClick={() => {
+                    setIsEditingContext(false)
+                    handleActivateAI()
+                  }}
+                  className="px-3 py-1 bg-primary text-primary-foreground text-xs font-medium rounded-md shadow hover:bg-primary/90 transition-colors"
+                >
+                  Analisis Ulang
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-foreground/80 leading-relaxed">{situation}</p>
+          )}
         </div>
       )}
 

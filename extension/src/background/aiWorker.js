@@ -3,7 +3,7 @@
 console.log("Background worker initialized.");
 
 const API_URL = "https://models.inference.ai.azure.com/chat/completions";
-const GITHUB_TOKEN = "YOUR_GITHUB_TOKEN_HERE"; // Removed for GitHub push protection
+const GITHUB_TOKEN = "YOUR_GITHUB_TOKEN_HERE"; // Ganti dengan token yang valid di lokal
 
 async function processChat(payload) {
   const { contactName, messages } = payload;
@@ -13,28 +13,38 @@ async function processChat(payload) {
   const data = await chrome.storage.local.get(['waCopilotPersonas']);
   const personas = data.waCopilotPersonas || [];
   
-  const matchedPersona = personas.find(p => p.contactName.toLowerCase() === contactName.toLowerCase());
+  const matchedPersona = personas.find(p => p.contactName?.toLowerCase() === contactName?.toLowerCase());
   if (matchedPersona) {
     personaContext = matchedPersona.context;
   }
 
-  // Siapkan teks percakapan
-  let conversationText = messages.map(m => `${m.sender}: ${m.text}`).join('\n');
+  // Format percakapan dengan label eksplisit: [SAYA] vs [LAWAN]
+  // Ini mencegah AI salah mengidentifikasi siapa pengirim dan siapa penerima
+  const conversationText = messages.map(m => {
+    const role = m.sender === 'You' ? '[SAYA]' : `[LAWAN - ${contactName}]`;
+    let line = `${role}: ${m.text}`;
+    if (m.type && m.type !== 'text') line = `${role}: (${m.type}) ${m.text}`;
+    return line;
+  }).join('\n');
   
-  // Siapkan System Prompt
-  let systemPrompt = `Kamu adalah Ghostwriter AI profesional yang terhubung langsung dengan WhatsApp Web user.
-Tugasmu adalah membaca konteks percakapan terakhir, dan membuat 1 (satu) balasan singkat, natural, dan langsung (tanpa tanda kutip, penjelasan, atau basa-basi tambahan).
-Balasan ini akan otomatis dimasukkan ke kolom chat user, jadi posisikan dirimu sebagai "User" (You) tersebut yang membalas pesan orang ini.
+  // Sistem prompt yang tegas soal peran
+  let systemPrompt = `Kamu adalah Ghostwriter AI untuk WhatsApp.
 
-Aturan Penting:
-1. Pahami bahasa yang digunakan (Indonesia formal, gaul, dll) dan ikuti gaya bahasanya.
-2. Jangan pernah menghasilkan output seperti "Tentu, ini balasannya:", LANGSUNG berikan balasannya saja.`;
+KONTEKS PERAN:
+- Percakapan berlabel [SAYA] = pesan yang sudah dikirim oleh USER (pemilik HP).
+- Percakapan berlabel [LAWAN - ${contactName}] = pesan dari lawan bicara.
+- Tugasmu: tulis SATU balasan singkat dari sudut pandang [SAYA] yang ditujukan kepada [LAWAN - ${contactName}].
+
+Aturan output:
+1. Output HANYA teks balasannya saja — tanpa tanda kutip, tanpa penjelasan, tanpa label apapun.
+2. Ikuti gaya bahasa yang digunakan [SAYA] di percakapan (formal/gaul/singkat/dll).
+3. Balasan harus logis merespons pesan TERAKHIR dari [LAWAN - ${contactName}].`;
 
   if (personaContext) {
-    systemPrompt += `\n3. User sedang berbicara dengan ${contactName}. Konteks/Hubungan: ${personaContext}. Sesuaikan nada bicara dengan konteks ini!`;
+    systemPrompt += `\n4. Konteks hubungan [SAYA] dengan [LAWAN - ${contactName}]: ${personaContext}. Sesuaikan nada!`;
   }
 
-  const userPrompt = `Lanjutkan percakapan ini dengan membalas pesan terakhir (sebagai "You"):\n\n${conversationText}\nYou:`;
+  const userPrompt = `Riwayat percakapan:\n\n${conversationText}\n\nTulis balasan [SAYA] kepada [LAWAN - ${contactName}] untuk merespons pesan terakhirnya:`;
 
   try {
     const response = await fetch("https://models.inference.ai.azure.com/chat/completions", {
@@ -69,49 +79,93 @@ Aturan Penting:
 }
 
 async function analyzeChat(payload) {
-  const { contactName, messages } = payload;
+  const { contactName, messages, customContext } = payload;
   if (!messages || messages.length === 0) {
-    return { status: 'Error', error: 'No messages to analyze' };
+    return { status: 'Error', error: 'No messages provided' };
   }
 
-  // Get persona context from storage
-  let personaContext = "";
-  const data = await chrome.storage.local.get(['waCopilotPersonas']);
-  const personas = data.waCopilotPersonas || [];
-  const matchedPersona = personas.find(p => p.contactName.toLowerCase() === contactName?.toLowerCase());
-  if (matchedPersona) {
-    personaContext = matchedPersona.context;
-  }
+  // Load all persistent context from storage in parallel
+  const stored = await chrome.storage.local.get([
+    'waCopilotPersonas',
+    'waCopilotMemory',
+    'waCopilotGoals'
+  ]);
 
-  const conversationText = messages.map(m => `${m.sender}: ${m.text}`).join('\n');
+  // Persona context
+  const personas = stored.waCopilotPersonas || [];
+  const matchedPersona = personas.find(p => p.contactName?.toLowerCase() === contactName?.toLowerCase());
+  const personaContext = matchedPersona?.context || '';
 
-  let systemPrompt = `Kamu adalah AI analis percakapan WhatsApp yang membantu user memahami situasi chat dan menyiapkan balasan.
+  // Conversation memory
+  const memory = stored.waCopilotMemory || {};
+  const contactMemory = memory[contactName];
 
-Tugasmu:
-1. Analisa percakapan yang diberikan
-2. Buat ringkasan situasi singkat (1-2 kalimat, pakai bahasa yang sama dengan chat)
-3. Hasilkan TEPAT 3 opsi balasan: Casual, Neutral, dan Assertive
+  // Conversation goal
+  const goals = stored.waCopilotGoals || {};
+  const contactGoal = goals[contactName]?.goal || '';
 
-Format output HARUS JSON valid seperti ini (tidak ada teks lain di luar JSON):
+  // Format percakapan dengan label eksplisit untuk mencegah ambiguitas peran
+  const conversationText = messages.map(m => {
+    const role = m.sender === 'You' ? '[SAYA]' : `[LAWAN - ${contactName}]`;
+    let line = role;
+    if (m.type && m.type !== 'text') line += ` (${m.type})`;
+    if (m.replyTo) line += ` [membalas: "${m.replyTo.text.slice(0, 40)}"]`;
+    if (m.delaySeconds && m.delaySeconds > 3600) line += ` (jeda ${Math.round(m.delaySeconds / 3600)} jam)`;
+    else if (m.delaySeconds && m.delaySeconds > 300) line += ` (jeda ${Math.round(m.delaySeconds / 60)} mnt)`;
+    line += `: ${m.text}`;
+    return line;
+  }).join('\n');
+
+  let systemPrompt = `Kamu adalah AI Assistant cerdas dan empatik untuk WhatsApp.
+
+LEGENDA PERCAKAPAN:
+- [SAYA] = USER pemilik HP, orang yang memakai ekstensi ini.
+- [LAWAN - ${contactName}] = lawan bicara yang perlu dibalas.
+
+Semua balasan yang kamu hasilkan adalah dari sudut pandang [SAYA] dan ditujukan kepada [LAWAN - ${contactName}].
+JANGAN PERNAH membuat balasan dari sudut pandang [LAWAN].
+
+Balas dalam bentuk JSON PERSIS seperti ini:
 {
-  "situation": "Ringkasan situasi percakapan di sini...",
+  "situation": "Ringkasan situasi percakapan (1-2 kalimat, bahasa yang sama dengan chat, dari perspektif [SAYA]).",
+  "tone": "nilai dari: cold | neutral | warm | tense | conflict",
   "replies": [
-    { "type": "Casual", "text": "Balasan santai di sini..." },
-    { "type": "Neutral", "text": "Balasan netral di sini..." },
-    { "type": "Assertive", "text": "Balasan tegas di sini..." }
+    { "type": "Casual", "text": "..." },
+    { "type": "Neutral", "text": "..." },
+    { "type": "Assertive", "text": "..." }
   ]
 }
 
-Aturan penting:
-- Output HANYA JSON, tidak ada kata penjelasan sebelum atau sesudah
-- Ikuti gaya bahasa yang digunakan di percakapan (formal/gaul/dll)
-- Balasan harus natural, singkat, dan relevan dengan konteks`;
+Panduan tone (berdasarkan keseluruhan suasana chat):
+- cold: Kaku, formal berlebihan, satu pihak tidak responsif / slow reply sangat lama
+- neutral: Normal, tidak ada tensi
+- warm: Akrab, hangat, nyaman
+- tense: Ada tensi, ketidaknyamanan, atau potensi konflik
+- conflict: Pertengkaran, konfrontasi, kemarahan jelas
+
+Aturan output:
+- Output HANYA JSON valid, tidak ada teks lain di luar JSON
+- Ikuti gaya bahasa [SAYA] di chat (formal/gaul/singkat/dll)
+- Setiap opsi balasan harus logis merespons pesan TERAKHIR dari [LAWAN - ${contactName}]
+- Pertimbangkan jeda waktu antar pesan sebagai sinyal mood`;
 
   if (personaContext) {
-    systemPrompt += `\n- User sedang berbicara dengan ${contactName}. Konteks hubungan: ${personaContext}. Sesuaikan nada!`;
+    systemPrompt += `\n\n[HUBUNGAN & PERSONA]: Kontak bernama "${contactName}". Konteks hubungan: ${personaContext}. Sesuaikan nada!`;
   }
 
-  const userPrompt = `Analisis percakapan ini (kontak: ${contactName || 'Unknown'}):\n\n${conversationText}`;
+  if (contactMemory?.lastSummary) {
+    systemPrompt += `\n\n[MEMORI SESI SEBELUMNYA]: ${contactMemory.lastSummary} (terakhir diperbarui: ${new Date(contactMemory.updatedAt).toLocaleDateString('id-ID')})`;
+  }
+
+  if (contactGoal) {
+    systemPrompt += `\n\n[TUJUAN PERCAKAPAN USER]: User ingin mengarahkan obrolan ini untuk: "${contactGoal}". Pastikan setidaknya 1 opsi balasan secara halus mendekatkan ke tujuan ini tanpa terkesan memaksa.`;
+  }
+
+  if (customContext) {
+    systemPrompt += `\n\n[REVISI KONTEKS DARI USER]: "${customContext}". PRIORITASKAN informasi ini dalam analisis.`;
+  }
+
+  const userPrompt = `Analisis percakapan berikut (kontak: ${contactName || 'Unknown'}):\n\n${conversationText}`;
 
   try {
     const response = await fetch("https://models.inference.ai.azure.com/chat/completions", {
@@ -127,7 +181,7 @@ Aturan penting:
           { role: "user", content: userPrompt }
         ],
         temperature: 0.7,
-        max_tokens: 400,
+        max_tokens: 500,
         response_format: { type: "json_object" }
       })
     });
@@ -138,7 +192,23 @@ Aturan penting:
     const raw = json.choices[0].message.content.trim();
     const parsed = JSON.parse(raw);
 
-    return { status: 'Success', situation: parsed.situation, replies: parsed.replies };
+    // Auto-save the new situation as memory for this contact
+    const currentMemory = stored.waCopilotMemory || {};
+    const updatedMemory = {
+      ...currentMemory,
+      [contactName]: {
+        lastSummary: parsed.situation,
+        updatedAt: new Date().toISOString(),
+      }
+    };
+    chrome.storage.local.set({ waCopilotMemory: updatedMemory });
+
+    return {
+      status: 'Success',
+      situation: parsed.situation,
+      tone: parsed.tone || 'neutral',
+      replies: parsed.replies
+    };
   } catch (error) {
     console.error("analyzeChat Error:", error);
     return { status: 'Error', error: error.message };
